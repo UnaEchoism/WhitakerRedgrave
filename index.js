@@ -50,10 +50,13 @@
         .map((p, i) => ({
             id: String(p.id || (i === 0 ? 'default' : `pl_${Date.now()}_${i}`)),
             name: String(p.name || (i === 0 ? '默认列表' : `歌单 ${i + 1}`)),
+            description: String(p.description || ''),
+            cover: typeof p.cover === 'string' ? p.cover : '',
+            color: /^#[0-9a-fA-F]{6}$/.test(String(p.color || '')) ? String(p.color) : '',
             tracks: Array.isArray(p.tracks) ? p.tracks.filter(Boolean) : []
         })) : [];
     if (!savedPlaylists.length || savedPlaylists[0].id !== 'default') {
-        savedPlaylists.unshift({ id: 'default', name: '默认列表', tracks: [] });
+        savedPlaylists.unshift({ id: 'default', name: '默认列表', description: '', cover: '', color: '', tracks: [] });
     }
 
     // 防卡死：严格去重与容量限制
@@ -110,14 +113,14 @@
         ballSize: 50, customColor: '#4a90e2', bgImage: '', bgImageWidth: 0, bgImageHeight: 0, 
         bgBlur: 10, bgBrightness: 70, lrcMode: 'popup', lrcFont: 16, lrcBottom: 80, 
         panelRatio: 'default', shapeStyle: 'round', theme: 'adaptive',
+        lrcFontName: '默认字体', lrcFontFamily: '', lrcFontCss: '', lrcFontId: '', lrcFontUrl: '',
         nowCoverImage: '', nowPlayingLabel: 'NOW PLAYING', showBall: true
     };
     try {
         const s = localStorage.getItem(CONFIG.SETTINGS_KEY);
         if (s) savedSettings = { ...savedSettings, ...JSON.parse(s) };
     } catch(e) {}
-    // 旧版本的字体设置仅作兼容清理，不再参与任何功能。
-    delete savedSettings.customFont;
+
 
     // ================= 状态管理 =================
     const STATE = {
@@ -131,7 +134,8 @@
         playingPlaylistId: savedPlaylists[0].id,
         searchResults: [],
         currentInputMode: 'netease',
-        isShowingSearch: false, 
+        isShowingSearch: false,
+        isPlaylistHome: true,
         localSearchKeyword: '', 
         currentIndex: -1,
         lyricsData: [],
@@ -147,14 +151,101 @@
     let audio = new targetWin.Audio();
     let lrcRafId = null;
 
+    const DEFAULT_PLAYLIST_COLORS = ['#4a90e2', '#9b59b6', '#e67e22', '#2ecc71', '#e74c3c', '#1abc9c'];
+    const getPlaylistColor = (playlist) => playlist?.color || savedSettings.customColor || '#4a90e2';
+    const renderPlaylistCover = (container, playlist, className = '') => {
+        if (!container) return;
+        container.replaceChildren();
+        if (playlist?.cover) {
+            const img = targetDoc.createElement('img');
+            img.src = playlist.cover;
+            img.alt = '';
+            img.draggable = false;
+            container.appendChild(img);
+        } else {
+            const icon = targetDoc.createElement('i');
+            icon.className = playlist?.id === 'default' ? 'fas fa-music' : 'fas fa-compact-disc';
+            container.appendChild(icon);
+        }
+        if (className) container.classList.add(className);
+    };
+
+    function editPlaylistName(playlist) {
+        const name = targetWin.prompt('请输入新的歌单名称：', playlist.name);
+        if (!name || !name.trim()) return;
+        playlist.name = name.trim().slice(0, 40);
+        savePlaylist();
+        renderListUI();
+        API.toast('歌单名称已更新');
+    }
+
+    function editPlaylistDescription(playlist) {
+        const desc = targetWin.prompt('请输入歌单简介（可留空）：', playlist.description || '');
+        if (desc === null) return;
+        playlist.description = desc.trim().slice(0, 160);
+        savePlaylist();
+        renderListUI();
+        API.toast('歌单简介已更新');
+    }
+
+    function editPlaylistColor(playlist) {
+        const input = targetDoc.createElement('input');
+        input.type = 'color';
+        input.value = getPlaylistColor(playlist);
+        input.style.position = 'fixed';
+        input.style.left = '-9999px';
+        input.style.top = '0';
+        input.style.opacity = '0';
+        targetDoc.body.appendChild(input);
+        input.onchange = () => {
+            playlist.color = input.value;
+            savePlaylist();
+            renderListUI();
+            API.toast('歌单颜色已更新');
+            input.remove();
+        };
+        input.onblur = () => setTimeout(() => input.remove(), 100);
+        input.click();
+    }
+
+    function editPlaylistCover(playlist) {
+        const input = targetDoc.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.style.display = 'none';
+        targetDoc.body.appendChild(input);
+        input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) { input.remove(); return; }
+            try {
+                playlist.cover = await readSmallImage(file, 320);
+                savePlaylist();
+                renderListUI();
+                API.toast('歌单封面已更新');
+            } catch (err) {
+                API.toast(err?.message === 'TOO_LARGE' ? '图片原文件太大，请选择 8MB 以内的图片。' : '图片读取失败，请换一张图片重试。');
+            } finally {
+                input.remove();
+            }
+        };
+        input.click();
+    }
+
+    function clearPlaylistCover(playlist) {
+        playlist.cover = '';
+        savePlaylist();
+        renderListUI();
+        API.toast('已恢复默认歌单封面');
+    }
+
     // ================= API 封装 =================
     const API = {
         toast(msg) {
             if (typeof triggerSlash === 'function') {
                 const safeMsg = msg.replace(/(\\+)?([|{}])/g, (m, s, c) => (s || '') + (s || '') + '\\' + c);
-                triggerSlash(`/echo severity=info [АрⅤ终端] ${safeMsg}`);
+                triggerSlash(`/echo severity=info [播放器测试] ${safeMsg}`);
             } else {
-                console.log(`[АрⅤ终端] ${msg}`);
+                console.log(`[播放器测试] ${msg}`);
             }
         },
         _extractArray(data) {
@@ -375,16 +466,33 @@
         .fm-add-btn:hover { opacity: 0.8; }
         .fm-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        .fm-playlist-tabs { display: flex; align-items: center; overflow-x: auto; padding: 6px 0; gap: 6px; border-bottom: 0; background: transparent; }
-        .fm-playlist-tabs::-webkit-scrollbar { height: 0px; display: none; }
-        .fm-playlist-tabs { touch-action: pan-x; -webkit-overflow-scrolling: touch; }
-        .fm-tab { padding: 4px 12px; border-radius: var(--fm-radius-input); font-size: 11px; color: var(--fm-text-sub); background: transparent; border: 1px solid transparent; cursor: pointer; white-space: nowrap; transition: var(--fm-transition); user-select: none; }
-        .fm-tab:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.05); }
-        .fm-tab.active { color: var(--fm-accent); background: rgba(0, 210, 255, 0.1); border-color: var(--fm-accent); font-weight: bold; }
-        .fm-tab-del { margin-left: 6px; font-size: 10px; opacity: 0.5; transition: opacity 0.2s; }
-        .fm-tab-del:hover { opacity: 1; color: #ff4d4f; }
-        .fm-tab-add { padding: 4px 8px; border-radius: var(--fm-radius-input); font-size: 12px; color: var(--fm-text-sub); cursor: pointer; transition: var(--fm-transition); display: flex; align-items: center; }
-        .fm-tab-add:hover { color: var(--fm-accent); background: rgba(255,255,255,0.1); }
+        .fm-playlist-tabs { display: flex; flex-direction: column; gap: 7px; padding: 4px 0; background: transparent; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+        .fm-playlist-tabs::-webkit-scrollbar { width: 0; height: 0; display: none; }
+        .fm-playlist-row { --playlist-color: var(--fm-accent); display: flex; align-items: center; gap: 10px; min-height: 58px; padding: 7px 8px; border: 1px solid transparent; border-left: 3px solid transparent; border-radius: var(--fm-radius-input); background: rgba(255,255,255,0.025); color: var(--fm-text-main); cursor: pointer; transition: var(--fm-transition); user-select: none; box-sizing: border-box; }
+        .fm-playlist-row:hover { background: rgba(255,255,255,0.07); border-color: var(--fm-border); border-left-color: var(--playlist-color); }
+        .fm-playlist-row-cover { width: 44px; height: 44px; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-radius: 10px; background: color-mix(in srgb, var(--playlist-color) 18%, transparent); color: var(--playlist-color); overflow: hidden; font-size: 16px; }
+        .fm-playlist-row-cover img, .fm-playlist-hero-cover img { width: 100%; height: 100%; display: block; object-fit: cover; }
+        .fm-playlist-row-info { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; }
+        .fm-playlist-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; color: var(--fm-text-main); }
+        .fm-playlist-row-count { font-size: 9px; color: var(--fm-text-sub); }
+        .fm-playlist-row-manage, .fm-playlist-manage-btn { flex: 0 0 28px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--fm-text-sub); border-radius: 8px; cursor: pointer; }
+        .fm-playlist-row-manage:hover, .fm-playlist-manage-btn:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.08); }
+        .fm-playlist-add-row { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; padding: 7px 10px; margin-top: 2px; border: 1px dashed var(--fm-border); border-radius: var(--fm-radius-input); background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; transition: var(--fm-transition); box-sizing: border-box; }
+        .fm-playlist-add-row:hover { color: var(--fm-accent); border-color: var(--fm-accent); background: rgba(0,210,255,0.05); }
+        .fm-playlist-detail-head { display: flex; align-items: center; gap: 8px; padding: 3px 0 5px; }
+        .fm-playlist-back { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--fm-text-sub); cursor: pointer; font-size: 11px; }
+        .fm-playlist-back:hover { color: var(--fm-text-main); background: rgba(255,255,255,0.06); }
+        .fm-playlist-detail-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; color: var(--fm-text-main); }
+        .fm-playlist-hero { --playlist-color: var(--fm-accent); display: grid; grid-template-columns: 72px minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 10px; margin: 0 0 7px; border-radius: 14px; border: 1px solid var(--fm-border); background: linear-gradient(135deg, color-mix(in srgb, var(--playlist-color) 16%, transparent), rgba(255,255,255,0.025)); overflow: hidden; }
+        .fm-playlist-hero-cover { width: 72px; height: 72px; border-radius: 12px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: color-mix(in srgb, var(--playlist-color) 20%, transparent); color: var(--playlist-color); font-size: 25px; }
+        .fm-playlist-hero-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+        .fm-playlist-hero-name { color: var(--fm-text-main); font-size: 15px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .fm-playlist-hero-count { color: var(--playlist-color); font-size: 9px; font-weight: 700; }
+        .fm-playlist-hero-desc { color: var(--fm-text-sub); font-size: 10px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .fm-playlist-playall { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 0; border-radius: 10px; background: var(--playlist-color); color: #fff; cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
+        .fm-playlist-playall:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        .fm-playlist-menu-item { display: flex; align-items: center; gap: 9px; }
+        .fm-playlist-menu-item i { width: 14px; text-align: center; opacity: .75; }
 
         /* 修复下拉菜单越界问题：移至顶层并使用 fixed 绝对定位 */
         .fm-pop-menu {
@@ -399,9 +507,8 @@
         .fm-pop-item { padding: 8px 16px; font-size: 12px; color: var(--fm-text-main); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.2s; }
         .fm-pop-item:hover { background: var(--fm-accent); color: #fff; }
 
-        .fm-playlist { flex: 0 0 auto; overflow: visible; padding: 4px 0; position: relative; }
-        .fm-playlist::-webkit-scrollbar { width: 4px; }
-        .fm-playlist::-webkit-scrollbar-thumb { background: var(--fm-border); border-radius: 2px; }
+        .fm-playlist { flex: 0 0 auto; overflow: visible; padding: 4px 0; position: relative; scrollbar-width:none; -ms-overflow-style:none; }
+        .fm-playlist::-webkit-scrollbar { width:0; height:0; display:none; }
         
         .fm-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; cursor: pointer; transition: background 0.2s; }
         .fm-item:hover { background: var(--fm-border); }
@@ -440,6 +547,25 @@
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
         }
 
+
+        /* 桌面歌词自定义字体：只作用于桌面歌词，不改变播放器其它文字。 */
+        .fm-lrc-font-row { display:flex; align-items:flex-start; gap:10px; }
+        .fm-lrc-font-picker { flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; }
+        .fm-lrc-font-current { width:100%; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:12px; outline:none; }
+        .fm-lrc-font-url-row { display:flex; gap:6px; width:100%; }
+        .fm-lrc-font-url { flex:1; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:11px; outline:none; }
+        .fm-lrc-font-url::placeholder { color:var(--fm-text-sub); opacity:.8; }
+        .fm-lrc-font-url:focus { border-color:var(--fm-accent); }
+        .fm-lrc-font-import { flex:0 0 auto; height:32px; border:0; border-radius:var(--fm-radius-input); padding:0 11px; background:var(--fm-accent); color:#fff; font-size:11px; cursor:pointer; }
+        .fm-lrc-font-import:disabled { opacity:.55; cursor:wait; }
+        .fm-lrc-font-reset { width:100%; height:32px; margin-top:7px; border:0; border-radius:9px; background:rgba(0,0,0,.045); color:var(--fm-text-sub); cursor:pointer; font-size:10px; transition:background .18s ease,color .18s ease; }
+        .fm-lrc-font-reset:hover { background:rgba(0,0,0,.08); color:var(--fm-text-main); }
+        .fm-lrc-font-reset:disabled { opacity:.55; cursor:default; }
+        .fm-lrc-font-hint { font-size:9px; color:var(--fm-text-sub); line-height:1.45; }
+        .fm-out-lyrics, .fm-out-lyrics *, .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
+            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
+        }
+
         .fm-bg-btn { background: var(--fm-border); color: var(--fm-text-main); border: none; border-radius: var(--fm-radius-input); padding: 4px 8px; font-size: 11px; cursor: pointer; transition: var(--fm-transition); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
         .fm-bg-btn:hover { background: var(--fm-accent); color: #fff; }
         .fm-bg-sliders { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 120px; }
@@ -453,6 +579,25 @@
             pointer-events: none; transition: filter 0.3s;
             background-image: var(--fm-bg-image, none);
             filter: blur(var(--fm-bg-blur, 0px)) brightness(var(--fm-bg-brightness, 100%));
+        }
+
+
+        /* 桌面歌词自定义字体：只作用于桌面歌词，不改变播放器其它文字。 */
+        .fm-lrc-font-row { display:flex; align-items:flex-start; gap:10px; }
+        .fm-lrc-font-picker { flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; }
+        .fm-lrc-font-current { width:100%; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:12px; outline:none; }
+        .fm-lrc-font-url-row { display:flex; gap:6px; width:100%; }
+        .fm-lrc-font-url { flex:1; min-width:0; height:32px; box-sizing:border-box; border:1px solid var(--fm-border); background:var(--fm-panel); color:var(--fm-text-main); border-radius:var(--fm-radius-input); padding:6px 10px; font-size:11px; outline:none; }
+        .fm-lrc-font-url::placeholder { color:var(--fm-text-sub); opacity:.8; }
+        .fm-lrc-font-url:focus { border-color:var(--fm-accent); }
+        .fm-lrc-font-import { flex:0 0 auto; height:32px; border:0; border-radius:var(--fm-radius-input); padding:0 11px; background:var(--fm-accent); color:#fff; font-size:11px; cursor:pointer; }
+        .fm-lrc-font-import:disabled { opacity:.55; cursor:wait; }
+        .fm-lrc-font-reset { width:100%; height:32px; margin-top:7px; border:0; border-radius:9px; background:rgba(0,0,0,.045); color:var(--fm-text-sub); cursor:pointer; font-size:10px; transition:background .18s ease,color .18s ease; }
+        .fm-lrc-font-reset:hover { background:rgba(0,0,0,.08); color:var(--fm-text-main); }
+        .fm-lrc-font-reset:disabled { opacity:.55; cursor:default; }
+        .fm-lrc-font-hint { font-size:9px; color:var(--fm-text-sub); line-height:1.45; }
+        .fm-out-lyrics, .fm-out-lyrics *, .fm-out-lyrics-scroll, .fm-out-lyrics-scroll * {
+            font-family: var(--fm-lrc-family, var(--fm-font)) !important;
         }
 
         .fm-out-lyrics {
@@ -548,9 +693,8 @@
         .fm-app-name { font-size:15px; font-weight:700; color:var(--fm-text-main); }
         .fm-app-sub { margin-top:2px; font-size:9px; letter-spacing:.16em; color:var(--fm-text-sub); }
         .fm-pages { flex:1 1 auto; min-height:0; overflow:hidden; position:relative; }
-        .fm-page { display:none; height:100%; min-height:0; overflow-y:auto; overflow-x:hidden; padding:8px 16px 18px; box-sizing:border-box; scrollbar-width:thin; }
-        .fm-page::-webkit-scrollbar { width: 4px; }
-        .fm-page::-webkit-scrollbar-thumb { background: var(--fm-border); border-radius: 2px; }
+        .fm-page { display:none; height:100%; min-height:0; overflow-y:auto; overflow-x:hidden; padding:8px 16px 18px; box-sizing:border-box; scrollbar-width:none; -ms-overflow-style:none; }
+        .fm-page::-webkit-scrollbar { width:0; height:0; display:none; }
         .fm-page.active { display:flex; flex-direction:column; gap:12px; }
         .fm-page.active > * { flex-shrink: 0; }
         .fm-section-kicker { font-size:9px; letter-spacing:.18em; color:var(--fm-accent); font-weight:800; margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -583,7 +727,7 @@
         .fm-library-input .fm-add-btn { height:38px; }
         .fm-page-playlist { flex:0 0 auto; min-height:0; display:flex; flex-direction:column; gap:10px; }
         .fm-page-playlist .fm-list-section { min-height:150px; flex:0 0 auto; border:0; border-radius:0; overflow:visible; background:transparent; }
-        .fm-page-playlist .fm-playlist-tabs { flex:0 0 auto; }
+        .fm-page-playlist .fm-playlist-tabs { flex:0 0 auto; width:100%; min-width:0; box-sizing:border-box; }
         .fm-page-playlist .fm-playlist { min-height:0; overflow:visible; }
         .fm-settings-section { padding:8px 0; }
         .fm-settings-section-title { font-size:12px; font-weight:800; color:var(--fm-text-main); margin-bottom:12px; }
@@ -633,7 +777,7 @@
             <div class="fm-app-head">
                 <div class="fm-brand">
                     <div class="fm-brand-text">
-                        <div class="fm-app-name">АрⅤ Terminal</div>
+                        <div class="fm-app-name">播放器测试</div>
                         <div class="fm-app-sub">MUSIC PLAYER</div>
                     </div>
                 </div>
@@ -649,7 +793,7 @@
                         </div>
                         <div class="fm-now-meta">
                             <div class="fm-section-kicker" id="fm-now-playing-label">NOW PLAYING</div>
-                            <div class="fm-title" id="fm-title">АрⅤ Terminal</div>
+                            <div class="fm-title" id="fm-title">播放器测试</div>
                             <div class="fm-artist" id="fm-artist">Awaiting Connection...</div>
                         </div>
                     </div>
@@ -674,14 +818,6 @@
                     </div>
 
                     <section class="fm-page-playlist" id="fm-playlist-section">
-                        <div class="fm-page-title">
-                            <div>
-                                <div class="fm-section-kicker">LIBRARY</div>
-                                <h2>歌单</h2>
-                            </div>
-                            <span class="fm-count-badge" id="fm-library-count">LIBRARY</span>
-                        </div>
-
                         <div class="fm-input-wrap fm-library-input">
                             <select class="fm-select" id="fm-source-select">
                                 <option value="netease">网易云</option>
@@ -768,6 +904,18 @@
                                     <span class="fm-lrc-settings-label">位置</span>
                                     <input type="range" id="fm-lrc-bottom-slider" min="40" max="400" step="5">
                                 </div>
+                                <div class="fm-lrc-settings-row fm-lrc-font-row">
+                                    <span class="fm-lrc-settings-label">字体</span>
+                                    <div class="fm-lrc-font-picker">
+                                        <input class="fm-lrc-font-current" id="fm-lrc-font-current" type="text" value="默认字体" readonly aria-label="当前桌面歌词字体">
+                                        <div class="fm-lrc-font-url-row">
+                                            <input class="fm-lrc-font-url" id="fm-lrc-font-url" type="url" placeholder="粘贴 ZeoSeven 字体详情页 URL" autocomplete="off" aria-label="ZeoSeven 字体网址">
+                                            <button class="fm-lrc-font-import" id="fm-lrc-font-import" type="button">导入</button>
+                                        </div>
+                                        <button class="fm-lrc-font-reset" id="fm-lrc-font-reset" type="button">恢复默认字体</button>
+                                        <div class="fm-lrc-font-hint">例如：https://fonts.zeoseven.com/items/217/　只会应用到桌面歌词</div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -807,6 +955,29 @@
                         <div class="fm-more-row">
                             <span>亮度</span>
                             <div class="fm-range-with-icon"><i class="fas fa-sun"></i><input type="range" class="fm-bg-slider" id="fm-bg-brightness" min="10" max="150" value="70"></div>
+                        </div>
+                    </div>
+
+                    <div class="fm-settings-section">
+                        <div class="fm-settings-section-title">缓存与维护</div>
+                        <div class="fm-more-row">
+                            <span>歌曲临时缓存</span>
+                            <button class="fm-bg-btn" id="fm-cache-clear-btn"><i class="fas fa-broom"></i> 清理</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>歌词运行缓存</span>
+                            <button class="fm-bg-btn" id="fm-cache-lyrics-btn"><i class="fas fa-align-left"></i> 清理</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>整理歌单数据</span>
+                            <button class="fm-bg-btn" id="fm-cache-repair-btn"><i class="fas fa-wrench"></i> 整理</button>
+                        </div>
+                        <div class="fm-more-row">
+                            <span>存储占用检查</span>
+                            <button class="fm-bg-btn" id="fm-cache-check-btn"><i class="fas fa-database"></i> 检查</button>
+                        </div>
+                        <div class="fm-more-row" style="font-size:0.78em; opacity:0.58; line-height:1.5;">
+                            <span style="width:100%;">以上操作只处理播放器自己的数据，不会清空 SillyTavern 的全局缓存；不会删除歌单、壁纸、小图或外观设置。</span>
                         </div>
                     </div>
                 </section>
@@ -855,6 +1026,10 @@
         lrcModeFallBtn: wrapper.querySelector('#fm-lrc-mode-fall'),
         lrcFontSlider: wrapper.querySelector('#fm-lrc-font-slider'),
         lrcBottomSlider: wrapper.querySelector('#fm-lrc-bottom-slider'),
+        lrcFontCurrent: wrapper.querySelector('#fm-lrc-font-current'),
+        lrcFontUrl: wrapper.querySelector('#fm-lrc-font-url'),
+        lrcFontImport: wrapper.querySelector('#fm-lrc-font-import'),
+        lrcFontReset: wrapper.querySelector('#fm-lrc-font-reset'),
         outLyricsScroll: wrapper.querySelector('#fm-out-lyrics-scroll'),
         outLyricsScrollList: wrapper.querySelector('#fm-lrc-scroll-list'),
         sourceSelect: wrapper.querySelector('#fm-source-select'),
@@ -874,6 +1049,10 @@
         ratioBtn: wrapper.querySelector('#fm-bg-btn-ratio'),
         bgBlurSlider: wrapper.querySelector('#fm-bg-blur'),
         bgBrightnessSlider: wrapper.querySelector('#fm-bg-brightness'),
+        cacheClearBtn: wrapper.querySelector('#fm-cache-clear-btn'),
+        cacheLyricsBtn: wrapper.querySelector('#fm-cache-lyrics-btn'),
+        cacheRepairBtn: wrapper.querySelector('#fm-cache-repair-btn'),
+        cacheCheckBtn: wrapper.querySelector('#fm-cache-check-btn'),
         outLyrics: wrapper.querySelector('#fm-out-lyrics'),
         progressTrack: wrapper.querySelector('#fm-progress-track'),
         progressFill: wrapper.querySelector('#fm-progress-fill'),
@@ -1133,54 +1312,180 @@
     // 列表渲染逻辑
     function renderTabs() {
         UI.playlistTabs.innerHTML = '';
-        STATE.playlists.forEach(p => {
-            const tab = targetDoc.createElement('div');
-            tab.className = `fm-tab ${p.id === STATE.currentPlaylistId ? 'active' : ''}`;
-            
-            if (p.id === 'default') {
-                tab.textContent = p.name;
-            } else {
-                tab.innerHTML = `<span>${escapeHTML(p.name)}</span><i class="fas fa-times fm-tab-del" title="删除歌单"></i>`;
-            }
-            
-            tab.onclick = (e) => {
-                if (e.target.classList.contains('fm-tab-del')) {
-                    e.stopPropagation();
-                    if (confirm(`确定要删除歌单 [${p.name}] 吗？`)) {
-                        STATE.playlists = STATE.playlists.filter(list => list.id !== p.id);
-                        if (STATE.currentPlaylistId === p.id) STATE.currentPlaylistId = 'default';
-                        if (STATE.playingPlaylistId === p.id) {
-                            audio.pause();
-                            STATE.playingPlaylistId = 'default';
-                            STATE.currentIndex = -1;
-                        }
-                        savePlaylist();
-                        renderListUI();
-                    }
-                    return;
-                }
-                STATE.currentPlaylistId = p.id;
+
+        if (!STATE.isPlaylistHome) {
+            const current = getCurrentPlaylist();
+            const color = getPlaylistColor(current);
+
+            const head = targetDoc.createElement('div');
+            head.className = 'fm-playlist-detail-head';
+            const back = targetDoc.createElement('button');
+            back.className = 'fm-playlist-back';
+            back.type = 'button';
+            back.innerHTML = '<i class="fas fa-chevron-left"></i><span>歌单</span>';
+            back.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                STATE.isPlaylistHome = true;
                 STATE.isShowingSearch = false;
                 renderListUI();
             };
-            UI.playlistTabs.appendChild(tab);
+            const title = targetDoc.createElement('div');
+            title.className = 'fm-playlist-detail-title';
+            title.textContent = current ? current.name : '歌单';
+            const manage = targetDoc.createElement('button');
+            manage.className = 'fm-playlist-manage-btn';
+            manage.type = 'button';
+            manage.title = '管理歌单';
+            manage.innerHTML = '<i class="fas fa-ellipsis-h"></i>';
+            manage.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showPlaylistManageMenu(e, current); };
+            head.append(back, title, manage);
+            UI.playlistTabs.appendChild(head);
+
+            if (current) {
+                const hero = targetDoc.createElement('div');
+                hero.className = 'fm-playlist-hero';
+                hero.style.setProperty('--playlist-color', color);
+
+                const cover = targetDoc.createElement('div');
+                cover.className = 'fm-playlist-hero-cover';
+                renderPlaylistCover(cover, current);
+
+                const info = targetDoc.createElement('div');
+                info.className = 'fm-playlist-hero-info';
+                const name = targetDoc.createElement('div');
+                name.className = 'fm-playlist-hero-name';
+                name.textContent = current.name;
+                const count = targetDoc.createElement('div');
+                count.className = 'fm-playlist-hero-count';
+                count.textContent = `${current.tracks.length} 首歌曲`;
+                const desc = targetDoc.createElement('div');
+                desc.className = 'fm-playlist-hero-desc';
+                desc.textContent = current.description || '还没有写歌单简介';
+                info.append(name, count, desc);
+
+                const playAll = targetDoc.createElement('button');
+                playAll.className = 'fm-playlist-playall';
+                playAll.type = 'button';
+                playAll.innerHTML = '<i class="fas fa-play"></i><span>播放全部</span>';
+                playAll.onclick = (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    if (!current.tracks.length) { API.toast('这个歌单还没有歌曲'); return; }
+                    playTrack(0, current.id);
+                };
+
+                hero.append(cover, info, playAll);
+                UI.playlistTabs.appendChild(hero);
+            }
+            return;
+        }
+
+        const title = targetDoc.createElement('div');
+        title.className = 'fm-playlist-detail-title';
+        title.style.cssText = 'padding:4px 2px 3px;font-size:14px;';
+        title.textContent = '我的歌单';
+        UI.playlistTabs.appendChild(title);
+
+        STATE.playlists.forEach(p => {
+            const color = getPlaylistColor(p);
+            const row = targetDoc.createElement('div');
+            row.className = 'fm-playlist-row';
+            row.setAttribute('role', 'button');
+            row.tabIndex = 0;
+            row.style.setProperty('--playlist-color', color);
+
+            const cover = targetDoc.createElement('div');
+            cover.className = 'fm-playlist-row-cover';
+            renderPlaylistCover(cover, p);
+
+            const info = targetDoc.createElement('div');
+            info.className = 'fm-playlist-row-info';
+            const name = targetDoc.createElement('div');
+            name.className = 'fm-playlist-row-name';
+            name.textContent = p.name;
+            const count = targetDoc.createElement('div');
+            count.className = 'fm-playlist-row-count';
+            count.textContent = `${p.tracks.length} 首歌曲${p.description ? ' · 有简介' : ''}`;
+            info.append(name, count);
+
+            const manage = targetDoc.createElement('button');
+            manage.className = 'fm-playlist-row-manage';
+            manage.type = 'button';
+            manage.title = '管理歌单';
+            manage.innerHTML = '<i class="fas fa-ellipsis-v"></i>';
+            manage.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showPlaylistManageMenu(e, p); };
+
+            row.append(cover, info, manage);
+            const open = () => {
+                STATE.currentPlaylistId = p.id;
+                STATE.isShowingSearch = false;
+                STATE.isPlaylistHome = false;
+                renderListUI();
+            };
+            row.addEventListener('click', open);
+            row.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+            });
+            UI.playlistTabs.appendChild(row);
         });
 
-        const addTab = targetDoc.createElement('div');
-        addTab.className = 'fm-tab-add';
-        addTab.innerHTML = '<i class="fas fa-plus"></i>';
-        addTab.title = "新建歌单";
-        addTab.onclick = () => {
-            const name = prompt("请输入新歌单名称：", "新建歌单");
-            if (name && name.trim()) {
-                const newId = 'pl_' + Date.now();
-                STATE.playlists.push({ id: newId, name: name.trim(), tracks: [] });
-                STATE.currentPlaylistId = newId;
-                savePlaylist();
-                renderListUI();
-            }
+        const addRow = targetDoc.createElement('div');
+        addRow.className = 'fm-playlist-add-row';
+        addRow.setAttribute('role', 'button');
+        addRow.innerHTML = '<i class="fas fa-plus"></i><span>新建歌单</span>';
+        addRow.onclick = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            const name = targetWin.prompt('请输入新歌单名称：', '新建歌单');
+            if (!name || !name.trim()) return;
+            const newId = 'pl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+            STATE.playlists.push({ id: newId, name: name.trim(), description: '', cover: '', color: DEFAULT_PLAYLIST_COLORS[STATE.playlists.length % DEFAULT_PLAYLIST_COLORS.length], tracks: [] });
+            STATE.currentPlaylistId = newId;
+            STATE.isShowingSearch = false;
+            STATE.isPlaylistHome = false;
+            savePlaylist();
+            renderListUI();
         };
-        UI.playlistTabs.appendChild(addTab);
+        UI.playlistTabs.appendChild(addRow);
+    }
+
+    function showPlaylistManageMenu(e, playlist) {
+        if (!playlist) return;
+        e.stopPropagation();
+        UI.popMenu.innerHTML = '';
+        const items = [
+            ['fas fa-pen', '重命名', () => editPlaylistName(playlist)],
+            ['fas fa-align-left', '编辑简介', () => editPlaylistDescription(playlist)],
+            ['fas fa-image', '更换封面', () => editPlaylistCover(playlist)],
+            ['fas fa-palette', '更换颜色', () => editPlaylistColor(playlist)]
+        ];
+        if (playlist.cover) items.push(['fas fa-trash-alt', '恢复默认封面', () => clearPlaylistCover(playlist)]);
+        if (playlist.id !== 'default') items.push(['fas fa-times', '删除歌单', () => {
+            if (!targetWin.confirm(`确定要删除歌单 [${playlist.name}] 吗？`)) return;
+            STATE.playlists = STATE.playlists.filter(list => list.id !== playlist.id);
+            if (STATE.currentPlaylistId === playlist.id) STATE.currentPlaylistId = 'default';
+            if (STATE.playingPlaylistId === playlist.id) {
+                audio.pause(); STATE.playingPlaylistId = 'default'; STATE.currentIndex = -1;
+            }
+            STATE.isPlaylistHome = true;
+            savePlaylist(); renderListUI();
+        }]);
+        items.forEach(([icon, label, action]) => {
+            const item = targetDoc.createElement('div');
+            item.className = 'fm-pop-item fm-playlist-menu-item';
+            item.innerHTML = `<i class="${icon}"></i><span>${label}</span>`;
+            item.onclick = () => { UI.popMenu.classList.remove('show'); action(); };
+            UI.popMenu.appendChild(item);
+        });
+        const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
+        const estimatedMenuHeight = items.length * 34 + 10;
+        const menuWidth = 150;
+        let top = rect.bottom + 4;
+        if (top + estimatedMenuHeight > targetWin.innerHeight - 10) top = rect.top - estimatedMenuHeight - 4;
+        let left = rect.right - menuWidth;
+        left = Math.max(10, Math.min(left, targetWin.innerWidth - menuWidth - 10));
+        top = Math.max(10, Math.min(top, targetWin.innerHeight - estimatedMenuHeight - 10));
+        UI.popMenu.style.top = `${top}px`;
+        UI.popMenu.style.left = `${left}px`;
+        UI.popMenu.classList.add('show');
     }
 
     // 事件发生在 Shadow DOM 内，监听 wrapper 比监听宿主 document 更可靠。
@@ -1268,6 +1573,7 @@
             API.toast(`已添加至 [${targetList.name}]`);
             STATE.isShowingSearch = false;
             STATE.currentPlaylistId = playlistId;
+            STATE.isPlaylistHome = false;
             renderListUI();
             
             if (STATE.currentIndex === -1 && STATE.playingPlaylistId === playlistId) {
@@ -1293,7 +1599,7 @@
                     if (sourceList.tracks.length > 0) playTrack(sourceIndex % sourceList.tracks.length, sourcePlaylistId);
                     else {
                         STATE.currentIndex = -1;
-                        UI.title.textContent = 'АрⅤ Terminal';
+                        UI.title.textContent = '播放器测试';
                         UI.artist.textContent = 'Awaiting Connection...';
                         UI.outLyrics.innerHTML = '';
                     }
@@ -1312,6 +1618,10 @@
     function renderListUI() {
         renderTabs();
         UI.playlistEl.innerHTML = '';
+
+        if (STATE.isPlaylistHome && !STATE.isShowingSearch) {
+            return;
+        }
         
         if (STATE.isShowingSearch) {
             const header = targetDoc.createElement('div');
@@ -1319,6 +1629,7 @@
             header.innerHTML = `<span>搜索结果 (${STATE.searchResults.length})</span><span class="fm-back-list">返回列表</span>`;
             header.querySelector('.fm-back-list').onclick = () => {
                 STATE.isShowingSearch = false;
+                STATE.isPlaylistHome = true;
                 renderListUI();
             };
             UI.playlistEl.appendChild(header);
@@ -1346,6 +1657,7 @@
         } else {
             const currentListObj = getCurrentPlaylist();
             const currentTracks = currentListObj.tracks;
+            UI.playlistEl.style.setProperty('--playlist-color', getPlaylistColor(currentListObj));
 
             if (currentTracks.length === 0) {
                 UI.playlistEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--fm-text-sub);font-size:12px;">列表为空，请导入或搜索</div>';
@@ -1379,7 +1691,7 @@
                         if (STATE.playingPlaylistId === currentListObj.id) {
                             audio.pause();
                             STATE.currentIndex = -1;
-                            UI.title.textContent = 'АрⅤ Terminal';
+                            UI.title.textContent = '播放器测试';
                             UI.artist.textContent = 'Awaiting Connection...';
                             UI.outLyrics.innerHTML = '';
                         }
@@ -1454,7 +1766,7 @@
                 if (targetList.tracks.length > 0) playTrack(index % targetList.tracks.length, playlistId);
                 else {
                     STATE.currentIndex = -1;
-                    UI.title.textContent = 'АрⅤ Terminal';
+                    UI.title.textContent = '播放器测试';
                     UI.artist.textContent = 'Awaiting Connection...';
                     UI.outLyrics.innerHTML = '';
                 }
@@ -2064,6 +2376,193 @@
         settingsSaveTimer = setTimeout(saveSettings, 250);
     };
 
+    // ================= 桌面歌词字体 =================
+    // 只接受用户主动提供的 ZeoSeven 字体详情页 / FontsAPI URL。
+    const loadedFontCss = new Set();
+    const loadingFontCss = new Map();
+
+    const extractFontFamilyFromRules = (rules) => {
+        try {
+            for (const rule of Array.from(rules || [])) {
+                if (rule.type === targetWin.CSSRule.FONT_FACE_RULE || rule.cssText?.startsWith('@font-face')) {
+                    const family = rule.style?.getPropertyValue('font-family') || '';
+                    if (family.trim()) return family.trim().replace(/^['"]|['"]$/g, '');
+                }
+                if (rule.cssRules) {
+                    const nested = extractFontFamilyFromRules(rule.cssRules);
+                    if (nested) return nested;
+                }
+            }
+        } catch (_) {}
+        return '';
+    };
+
+    const parseZeoSevenUrl = (rawUrl) => {
+        let url;
+        try { url = new URL(String(rawUrl || '').trim()); } catch (_) { return null; }
+        const host = url.hostname.toLowerCase();
+        if (host !== 'fonts.zeoseven.com' && host !== 'www.fonts.zeoseven.com' && host !== 'fontsapi.zeoseven.com') return null;
+        if (host === 'fonts.zeoseven.com' || host === 'www.fonts.zeoseven.com') {
+            const m = url.pathname.match(/^\/items\/([^/]+)\/?$/i);
+            if (!m) return null;
+            const id = decodeURIComponent(m[1]);
+            return { id, css: `https://fontsapi.zeoseven.com/${encodeURIComponent(id)}/main/result.css`, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
+        }
+        const m = url.pathname.match(/^\/([^/]+)\/main\/result\.css$/i);
+        if (!m) return null;
+        const id = decodeURIComponent(m[1]);
+        return { id, css: url.href, pageUrl: `https://fonts.zeoseven.com/items/${encodeURIComponent(id)}/` };
+    };
+
+    const loadZeoCssAndReadFamily = (cssUrl, timeout = 7000) => new Promise((resolve) => {
+        let settled = false;
+        let timer = null;
+        const finish = (family) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            resolve(family || '');
+        };
+        const id = 'fm-zeofont-inspect-' + btoa(unescape(encodeURIComponent(cssUrl))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
+        const old = targetDoc.getElementById(id);
+        if (old) { try { old.remove(); } catch (_) {} }
+        const link = targetDoc.createElement('link');
+        link.id = id;
+        link.rel = 'stylesheet';
+        link.href = cssUrl;
+        link.crossOrigin = 'anonymous';
+        timer = setTimeout(() => finish(''), timeout);
+        link.onload = () => {
+            let family = '';
+            try { family = extractFontFamilyFromRules(link.sheet?.cssRules); } catch (_) {}
+            finish(family);
+        };
+        link.onerror = () => finish('');
+        (targetDoc.head || targetDoc.documentElement).appendChild(link);
+    });
+
+    const ensureZeoFontLoaded = (font) => {
+        if (!font?.css || !font?.family) return Promise.resolve(false);
+        if (loadedFontCss.has(font.css)) return Promise.resolve(true);
+        if (loadingFontCss.has(font.css)) return loadingFontCss.get(font.css);
+        const promise = new Promise((resolve) => {
+            let settled = false;
+            let timer = null;
+            const finish = (ok) => {
+                if (settled) return;
+                settled = true;
+                if (timer) clearTimeout(timer);
+                if (ok) loadedFontCss.add(font.css);
+                loadingFontCss.delete(font.css);
+                resolve(ok);
+            };
+            const id = 'fm-zeofont-' + btoa(unescape(encodeURIComponent(font.css))).replace(/[^a-zA-Z0-9]/g,'').slice(-28);
+            const old = targetDoc.getElementById(id);
+            if (old) { loadedFontCss.add(font.css); finish(true); return; }
+            const link = targetDoc.createElement('link');
+            link.id = id;
+            link.rel = 'stylesheet';
+            link.href = font.css;
+            link.crossOrigin = 'anonymous';
+            timer = setTimeout(() => finish(false), 7000);
+            link.onload = async () => {
+                try {
+                    if (targetDoc.fonts?.load) {
+                        await Promise.race([
+                            targetDoc.fonts.load(`16px "${font.family.replace(/"/g, '\\"')}"`),
+                            new Promise(r => setTimeout(r, 1800))
+                        ]);
+                    }
+                } catch (_) {}
+                finish(true);
+            };
+            link.onerror = () => finish(false);
+            (targetDoc.head || targetDoc.documentElement).appendChild(link);
+        });
+        loadingFontCss.set(font.css, promise);
+        return promise;
+    };
+
+    const setLrcFontVisual = (font) => {
+        const family = font?.family || '';
+        const safeFamily = family ? `"${family.replace(/"/g,'\\"')}"` : '';
+        UI.wrapper.style.setProperty('--fm-lrc-family', safeFamily || 'var(--fm-font)');
+        const lyricRoots = [UI.outLyrics, UI.outLyricsScroll, UI.outLyricsScrollList].filter(Boolean);
+        lyricRoots.forEach(root => {
+            root.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important');
+            root.querySelectorAll('*').forEach(el => el.style.setProperty('font-family', safeFamily || 'var(--fm-font)', 'important'));
+        });
+        if (UI.lrcFontCurrent) {
+            UI.lrcFontCurrent.value = font?.name || '默认字体';
+            UI.lrcFontCurrent.style.fontFamily = safeFamily || '';
+        }
+    };
+
+    const applyLrcFont = (font, persist = true) => {
+        setLrcFontVisual(font);
+        if (persist) {
+            savedSettings.lrcFontName = font?.name || '默认字体';
+            savedSettings.lrcFontFamily = font?.family || '';
+            savedSettings.lrcFontCss = font?.css || '';
+            savedSettings.lrcFontId = font?.id || '';
+            savedSettings.lrcFontUrl = font?.pageUrl || '';
+            scheduleSettingsSave();
+        }
+    };
+
+    const getSavedLrcFont = () => {
+        if (savedSettings.lrcFontName === '默认字体' || !savedSettings.lrcFontFamily || !savedSettings.lrcFontCss) return null;
+        return {
+            id: savedSettings.lrcFontId || '', name: savedSettings.lrcFontName,
+            family: savedSettings.lrcFontFamily, css: savedSettings.lrcFontCss,
+            pageUrl: savedSettings.lrcFontUrl || ''
+        };
+    };
+
+    const resetLrcFontToDefault = () => {
+        try {
+            targetDoc.querySelectorAll('link[id^="fm-zeofont-"]').forEach(link => { try { link.remove(); } catch (_) {} });
+            targetDoc.querySelectorAll('link[id^="fm-zeofont-inspect-"]').forEach(link => { try { link.remove(); } catch (_) {} });
+        } catch (_) {}
+        loadedFontCss.clear();
+        loadingFontCss.clear();
+        savedSettings.lrcFontName = '默认字体';
+        savedSettings.lrcFontFamily = '';
+        savedSettings.lrcFontCss = '';
+        savedSettings.lrcFontId = '';
+        savedSettings.lrcFontUrl = '';
+        if (UI.lrcFontUrl) UI.lrcFontUrl.value = '';
+        applyLrcFont(null, true);
+        API.toast('已恢复默认字体');
+    };
+
+    const importZeoSevenFont = async () => {
+        const raw = UI.lrcFontUrl?.value.trim();
+        if (!raw) { API.toast('请先粘贴 ZeoSeven 字体网址'); return; }
+        const parsed = parseZeoSevenUrl(raw);
+        if (!parsed) {
+            API.toast('请输入 ZeoSeven 字体详情页网址，例如 https://fonts.zeoseven.com/items/217/');
+            return;
+        }
+        const btn = UI.lrcFontImport;
+        if (btn) { btn.disabled = true; btn.textContent = '加载中'; }
+        try {
+            const family = await loadZeoCssAndReadFamily(parsed.css, 7000);
+            if (!family) { API.toast('字体 CSS 已请求，但没有读取到 font-family；请检查该字体的 FontsAPI 是否可用'); return; }
+            const font = { id: parsed.id, name: family, family, css: parsed.css, pageUrl: parsed.pageUrl };
+            const ok = await ensureZeoFontLoaded(font);
+            if (!ok) { API.toast('字体加载失败，请检查网络后重试'); return; }
+            applyLrcFont(font, true);
+            if (UI.lrcFontUrl) UI.lrcFontUrl.value = parsed.pageUrl;
+            API.toast(`已导入并应用：${family}`);
+        } catch (err) {
+            console.warn('[ArV] ZeoSeven font import failed:', err);
+            API.toast('字体导入失败，请检查网址和网络连接');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '导入'; }
+        }
+    };
+
     const applyDecoration = () => {
         const label = String(savedSettings.nowPlayingLabel || '').trim() || 'NOW PLAYING';
         if (UI.nowPlayingLabel) UI.nowPlayingLabel.textContent = label;
@@ -2163,6 +2662,7 @@
         UI.wrapper.style.setProperty('--fm-bg-brightness', `${savedSettings.bgBrightness}%`);
         UI.wrapper.style.setProperty('--fm-lrc-font', `${savedSettings.lrcFont}px`);
         UI.wrapper.style.setProperty('--fm-lrc-bottom', `${savedSettings.lrcBottom}px`);
+        setLrcFontVisual(getSavedLrcFont());
 
         // 修复：面板比例应用逻辑
         if (savedSettings.panelRatio === '3:4') {
@@ -2203,6 +2703,18 @@
     };
     updateLrcModeBtns();
     syncLyricsVisibility();
+
+    UI.lrcFontImport?.addEventListener('click', importZeoSevenFont);
+    UI.lrcFontUrl?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') importZeoSevenFont();
+    });
+    UI.lrcFontReset?.addEventListener('click', resetLrcFontToDefault);
+    const savedLrcFont = getSavedLrcFont();
+    if (savedLrcFont) {
+        ensureZeoFontLoaded(savedLrcFont).then(ok => {
+            if (ok) setLrcFontVisual(savedLrcFont);
+        });
+    }
 
     UI.sizeSlider.oninput = (e) => {
         savedSettings.ballSize = e.target.value;
@@ -2293,6 +2805,76 @@
         }
     };
 
+    // ================= 缓存与数据维护 =================
+    // 这里刻意只操作播放器自己的 localStorage 数据和内存状态，绝不碰 SillyTavern 全局缓存。
+    UI.cacheClearBtn.onclick = () => {
+        const confirmed = targetWin.confirm('清理歌曲临时缓存？\n\n将清除歌曲已保存的播放地址、歌词地址和失败重试标记。\n不会删除歌单、歌曲信息、壁纸、小图或外观设置。');
+        if (!confirmed) return;
+
+        let cleared = 0;
+        STATE.playlists.forEach(list => {
+            list.tracks.forEach(track => {
+                let changed = false;
+                if (track.url) { track.url = null; changed = true; }
+                if (track.lrcUrl) { track.lrcUrl = null; changed = true; }
+                if (track.__retriedOnError) { delete track.__retriedOnError; changed = true; }
+                if (changed) cleared++;
+            });
+        });
+        savePlaylist();
+        API.toast(cleared > 0 ? `已清理 ${cleared} 首歌曲的临时缓存，下次播放时重新解析。` : '当前没有需要清理的歌曲缓存。');
+    };
+
+    UI.cacheLyricsBtn.onclick = () => {
+        if (audio && !audio.paused) audio.pause();
+        STATE.lyricsData = [];
+        STATE.lastActiveLrcIndex = -1;
+        if (UI.outLyrics) UI.outLyrics.replaceChildren();
+        if (UI.outLyricsScrollList) UI.outLyricsScrollList.replaceChildren();
+        API.toast('歌词运行缓存已清理；已保存的歌曲歌词地址不会被删除。');
+    };
+
+    UI.cacheRepairBtn.onclick = () => {
+        const confirmed = targetWin.confirm('整理播放器歌单数据？\n\n会去除重复歌曲、修复异常歌单项，并限制单个歌单最多 1000 首歌曲。\n不会删除壁纸、小图或外观设置。');
+        if (!confirmed) return;
+
+        let removed = 0;
+        STATE.playlists = STATE.playlists.filter(Boolean).map((list, i) => {
+            list.id = String(list.id || (i === 0 ? 'default' : `pl_${Date.now()}_${i}`));
+            list.name = String(list.name || (i === 0 ? '默认列表' : `歌单 ${i + 1}`));
+            list.description = String(list.description || '');
+            list.cover = typeof list.cover === 'string' ? list.cover : '';
+            list.color = /^#[0-9a-fA-F]{6}$/.test(String(list.color || '')) ? String(list.color) : '';
+            const before = Array.isArray(list.tracks) ? list.tracks.length : 0;
+            list.tracks = dedupeAndLimitTracks(Array.isArray(list.tracks) ? list.tracks.filter(Boolean) : []);
+            removed += before - list.tracks.length;
+            return list;
+        });
+        if (!STATE.playlists.length || STATE.playlists[0].id !== 'default') {
+            STATE.playlists.unshift({ id: 'default', name: '默认列表', description: '', cover: '', color: '', tracks: [] });
+        }
+        STATE.currentPlaylistId = STATE.playlists.some(p => p.id === STATE.currentPlaylistId) ? STATE.currentPlaylistId : STATE.playlists[0].id;
+        STATE.playingPlaylistId = STATE.playlists.some(p => p.id === STATE.playingPlaylistId) ? STATE.playingPlaylistId : STATE.playlists[0].id;
+        savePlaylist();
+        renderListUI();
+        API.toast(removed > 0 ? `整理完成：清理了 ${removed} 条重复/超限数据。` : '整理完成：没有发现需要清理的重复或超限数据。');
+    };
+
+    UI.cacheCheckBtn.onclick = () => {
+        try {
+            const playlistRaw = localStorage.getItem(CONFIG.STORAGE_KEY) || '';
+            const settingsRaw = localStorage.getItem(CONFIG.SETTINGS_KEY) || '';
+            const playlistKB = (new Blob([playlistRaw]).size / 1024).toFixed(1);
+            const settingsKB = (new Blob([settingsRaw]).size / 1024).toFixed(1);
+            const trackCount = STATE.playlists.reduce((sum, list) => sum + (Array.isArray(list.tracks) ? list.tracks.length : 0), 0);
+            const cachedCount = STATE.playlists.reduce((sum, list) => sum + (list.tracks || []).filter(t => t.url || t.lrcUrl).length, 0);
+            targetWin.alert(`播放器存储检查\n\n歌单数据：${playlistKB} KB\n外观/图片设置：${settingsKB} KB\n歌单数量：${STATE.playlists.length}\n歌曲数量：${trackCount}\n已保存音源/歌词地址：${cachedCount} 首\n\n如遇卡顿，可先使用“歌曲临时缓存”和“歌词运行缓存”；不要清空 SillyTavern 全局缓存。`);
+        } catch (e) {
+            API.toast('存储检查失败，但没有修改任何数据。');
+            console.warn('[АрⅤ] 存储检查失败', e);
+        }
+    };
+
     UI.ratioBtn.onclick = () => {
         const ratios = ['default', '3:4', '9:16'];
         let idx = ratios.indexOf(savedSettings.panelRatio);
@@ -2375,8 +2957,8 @@
         const item = doc.createElement('div');
         item.id = 'arvTerminalExtensionMenuItem';
         item.className = 'list-group-item flex-container flexGap5';
-        item.title = '打开 АрⅤ Terminal 音乐播放器';
-        item.innerHTML = '<div class="fa-fw fa-solid fa-music extensionsMenuExtensionButton"></div><span>АрⅤ播放器</span>';
+        item.title = '打开 播放器测试 音乐播放器';
+        item.innerHTML = '<div class="fa-fw fa-solid fa-music extensionsMenuExtensionButton"></div><span>播放器测试</span>';
 
         item.addEventListener('click', (event) => {
             event.preventDefault();
