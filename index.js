@@ -20,6 +20,7 @@
     // ================= 核心配置 =================
     const CONFIG = {
         ID: 'st-flow-music-player-pro',
+        VERSION: '4.3.1',
         Z_INDEX: 2147483640,
         SAFE_MARGIN: 20, // 增加安全边距，防止贴边太紧
         DEFAULT_THEME: 'adaptive',
@@ -243,9 +244,9 @@
         toast(msg) {
             if (typeof triggerSlash === 'function') {
                 const safeMsg = msg.replace(/(\\+)?([|{}])/g, (m, s, c) => (s || '') + (s || '') + '\\' + c);
-                triggerSlash(`/echo severity=info [播放器测试] ${safeMsg}`);
+                triggerSlash(`/echo severity=info [ᴀᴘᴠ ᴘʟᴀʏᴇʀ] ${safeMsg}`);
             } else {
-                console.log(`[播放器测试] ${msg}`);
+                console.log(`[ᴀᴘᴠ ᴘʟᴀʏᴇʀ] ${msg}`);
             }
         },
         _extractArray(data) {
@@ -777,7 +778,7 @@
             <div class="fm-app-head">
                 <div class="fm-brand">
                     <div class="fm-brand-text">
-                        <div class="fm-app-name">播放器测试</div>
+                        <div class="fm-app-name">ᴀᴘᴠ ᴘʟᴀʏᴇʀ</div>
                         <div class="fm-app-sub">MUSIC PLAYER</div>
                     </div>
                 </div>
@@ -793,7 +794,7 @@
                         </div>
                         <div class="fm-now-meta">
                             <div class="fm-section-kicker" id="fm-now-playing-label">NOW PLAYING</div>
-                            <div class="fm-title" id="fm-title">播放器测试</div>
+                            <div class="fm-title" id="fm-title">ᴀᴘᴠ ᴘʟᴀʏᴇʀ</div>
                             <div class="fm-artist" id="fm-artist">Awaiting Connection...</div>
                         </div>
                     </div>
@@ -1599,7 +1600,7 @@
                     if (sourceList.tracks.length > 0) playTrack(sourceIndex % sourceList.tracks.length, sourcePlaylistId);
                     else {
                         STATE.currentIndex = -1;
-                        UI.title.textContent = '播放器测试';
+                        UI.title.textContent = 'ᴀᴘᴠ ᴘʟᴀʏᴇʀ';
                         UI.artist.textContent = 'Awaiting Connection...';
                         UI.outLyrics.innerHTML = '';
                     }
@@ -1691,7 +1692,7 @@
                         if (STATE.playingPlaylistId === currentListObj.id) {
                             audio.pause();
                             STATE.currentIndex = -1;
-                            UI.title.textContent = '播放器测试';
+                            UI.title.textContent = 'ᴀᴘᴠ ᴘʟᴀʏᴇʀ';
                             UI.artist.textContent = 'Awaiting Connection...';
                             UI.outLyrics.innerHTML = '';
                         }
@@ -1766,7 +1767,7 @@
                 if (targetList.tracks.length > 0) playTrack(index % targetList.tracks.length, playlistId);
                 else {
                     STATE.currentIndex = -1;
-                    UI.title.textContent = '播放器测试';
+                    UI.title.textContent = 'ᴀᴘᴠ ᴘʟᴀʏᴇʀ';
                     UI.artist.textContent = 'Awaiting Connection...';
                     UI.outLyrics.innerHTML = '';
                 }
@@ -2957,8 +2958,8 @@
         const item = doc.createElement('div');
         item.id = 'arvTerminalExtensionMenuItem';
         item.className = 'list-group-item flex-container flexGap5';
-        item.title = '打开 播放器测试 音乐播放器';
-        item.innerHTML = '<div class="fa-fw fa-solid fa-music extensionsMenuExtensionButton"></div><span>播放器测试</span>';
+        item.title = '打开 ᴀᴘᴠ ᴘʟᴀʏᴇʀ 音乐播放器';
+        item.innerHTML = '<div class="fa-fw fa-solid fa-music extensionsMenuExtensionButton"></div><span>ᴀᴘᴠ ᴘʟᴀʏᴇʀ</span>';
 
         item.addEventListener('click', (event) => {
             event.preventDefault();
